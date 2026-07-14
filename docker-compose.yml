@@ -13,7 +13,6 @@ services:
 
     volumes:
       - file_assistant_workspace:/app/workspace
-      - file_assistant_database:/app/database
       - file_assistant_logs:/app/logs
 
     restart: unless-stopped
@@ -35,5 +34,4 @@ services:
 
 volumes:
   file_assistant_workspace:
-  file_assistant_database:
   file_assistant_logs:
