@@ -50,3 +50,40 @@ GROQ_MODEL = os.getenv(
 )
 
 WORKSPACE_ROOT = get_workspace_root()
+
+# =============================================================================
+# Checkpoint Persistence Configuration
+# =============================================================================
+
+
+CHECKPOINT_BACKEND = os.getenv(
+    "CHECKPOINT_BACKEND",
+    "sqlite",
+).strip().lower()
+
+SUPPORTED_CHECKPOINT_BACKENDS = {
+    "sqlite",
+    "postgres",
+}
+
+if CHECKPOINT_BACKEND not in SUPPORTED_CHECKPOINT_BACKENDS:
+    raise ValueError(
+        "CHECKPOINT_BACKEND must be one of: "
+        + ", ".join(sorted(SUPPORTED_CHECKPOINT_BACKENDS))
+    )
+
+
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "",
+).strip()
+
+if (
+    CHECKPOINT_BACKEND == "postgres"
+    and not DATABASE_URL
+):
+    raise ValueError(
+        "DATABASE_URL is required when "
+        "CHECKPOINT_BACKEND=postgres."
+    )
+

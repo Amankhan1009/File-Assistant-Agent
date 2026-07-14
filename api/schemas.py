@@ -23,3 +23,9 @@ class ChatResponse(BaseModel):
     thread_id: str
 
     response: str
+
+
+class HealthResponse(BaseModel):
+    """Response payload returned by the API health endpoint."""
+
+    status: str

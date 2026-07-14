@@ -38,6 +38,37 @@ class FakeCheckpointer:
         )
 
 
+class FakeCheckpointerRuntime:
+    def __init__(
+        self,
+        checkpointer: FakeCheckpointer,
+        enter_error: Exception | None = None,
+    ):
+        self.checkpointer = checkpointer
+        self.enter_error = enter_error
+        self.enter_calls = 0
+        self.exit_calls = 0
+
+    def __enter__(self):
+        self.enter_calls += 1
+
+        if self.enter_error is not None:
+            raise self.enter_error
+
+        return self.checkpointer
+
+    def __exit__(
+        self,
+        exc_type,
+        exc_value,
+        traceback,
+    ):
+        self.exit_calls += 1
+        self.checkpointer.conn.close()
+
+        return False
+
+
 class FakeGraph:
     def __init__(
         self,
@@ -112,12 +143,16 @@ def install_runtime(
     if checkpointer is None:
         checkpointer = FakeCheckpointer()
 
+    runtime = FakeCheckpointerRuntime(
+        checkpointer,
+    )
+
     build_calls = []
 
     monkeypatch.setattr(
         app,
-        "create_checkpointer",
-        lambda: checkpointer,
+        "checkpointer_runtime",
+        lambda: runtime,
     )
 
     def fake_build_graph(
@@ -429,9 +464,12 @@ def test_main_handles_checkpointer_initialization_failure_without_building_graph
         thread_id="storage-failure-thread",
     )
 
-    def fail_create_checkpointer():
-        raise RuntimeError(
-            "SECRET_DATABASE_INITIALIZATION_ERROR"
+    def fail_checkpointer_runtime():
+        return FakeCheckpointerRuntime(
+            FakeCheckpointer(),
+            enter_error=RuntimeError(
+                "SECRET_DATABASE_INITIALIZATION_ERROR"
+            ),
         )
 
     def fake_build_graph(
@@ -445,8 +483,8 @@ def test_main_handles_checkpointer_initialization_failure_without_building_graph
 
     monkeypatch.setattr(
         app,
-        "create_checkpointer",
-        fail_create_checkpointer,
+        "checkpointer_runtime",
+        fail_checkpointer_runtime,
     )
 
     monkeypatch.setattr(
@@ -490,10 +528,14 @@ def test_main_handles_unexpected_runtime_failure_and_closes_connection(
         thread_id="runtime-failure-thread",
     )
 
+    runtime = FakeCheckpointerRuntime(
+        checkpointer,
+    )
+
     monkeypatch.setattr(
         app,
-        "create_checkpointer",
-        lambda: checkpointer,
+        "checkpointer_runtime",
+        lambda: runtime,
     )
 
     def fail_build_graph(

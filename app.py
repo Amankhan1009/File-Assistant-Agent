@@ -4,7 +4,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
 
 from core.logging import get_logger
-from database.checkpointer import create_checkpointer
+from database.checkpointer import checkpointer_runtime
 from graph.builder import build_graph
 
 
@@ -65,7 +65,8 @@ def main() -> None:
     # =========================================================================
 
     try:
-        checkpointer = create_checkpointer()
+        runtime = checkpointer_runtime()
+        checkpointer = runtime.__enter__()
 
     except Exception:
         logger.exception(
@@ -196,17 +197,21 @@ def main() -> None:
 
     finally:
         try:
-            checkpointer.conn.close()
+            runtime.__exit__(
+                None,
+                None,
+                None,
+            )
 
         except Exception:
             logger.exception(
-                "Checkpointer connection cleanup failed | thread_id=%s",
+                "Checkpointer cleanup failed | thread_id=%s",
                 thread_id,
             )
 
         else:
             logger.info(
-                "Checkpointer connection closed | thread_id=%s",
+                "Checkpointer cleanup completed | thread_id=%s",
                 thread_id,
             )
 

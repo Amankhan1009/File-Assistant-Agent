@@ -1,48 +1,44 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
-from langchain_core.messages import AIMessage, HumanMessage
-from langgraph.errors import GraphRecursionError
+from fastapi import FastAPI
 
-from api.schemas import ChatRequest, ChatResponse
-
-from core.logging import get_logger
-from database.checkpointer import create_checkpointer
+from api.schemas import (
+    ChatRequest,
+    ChatResponse,
+    HealthResponse,
+)
+from database.checkpointer import checkpointer_runtime
 from graph.builder import build_graph
 
 
-RECURSION_LIMIT = 20
-
-logger = get_logger("api")
+# =============================================================================
+# Application Lifespan
+# =============================================================================
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Initialize and clean up long-lived application resources.
+    Initialize shared application resources during startup and clean them up
+    during shutdown.
 
-    One SQLite checkpointer and one compiled LangGraph instance are created
-    for the FastAPI application lifecycle and reused across requests.
+    The configured checkpointer backend owns its database-specific lifecycle.
+    The compiled LangGraph instance is shared across API requests.
     """
-    logger.info("API startup initiated")
+    with checkpointer_runtime() as checkpointer:
+        graph = build_graph(
+            checkpointer=checkpointer,
+        )
 
-    checkpointer = create_checkpointer()
+        app.state.checkpointer = checkpointer
+        app.state.graph = graph
 
-    graph = build_graph(
-        checkpointer=checkpointer,
-    )
-
-    app.state.checkpointer = checkpointer
-    app.state.graph = graph
-
-    logger.info("API startup completed")
-
-    try:
         yield
 
-    finally:
-        checkpointer.conn.close()
-        logger.info("API shutdown completed")
+
+# =============================================================================
+# FastAPI Application
+# =============================================================================
 
 
 app = FastAPI(
@@ -55,13 +51,25 @@ app = FastAPI(
 )
 
 
-@app.get("/health")
-def health_check() -> dict[str, str]:
-    """Return API health status."""
+# =============================================================================
+# Health Endpoint
+# =============================================================================
 
-    return {
-        "status": "healthy",
-    }
+
+@app.get(
+    "/health",
+    response_model=HealthResponse,
+)
+def health() -> HealthResponse:
+    """Return the API health status."""
+    return HealthResponse(
+        status="healthy",
+    )
+
+
+# =============================================================================
+# Chat Endpoint
+# =============================================================================
 
 
 @app.post(
@@ -69,88 +77,32 @@ def health_check() -> dict[str, str]:
     response_model=ChatResponse,
 )
 def chat(
-    payload: ChatRequest,
-    request: Request,
+    request: ChatRequest,
 ) -> ChatResponse:
     """
-    Execute one File Assistant interaction for a persistent conversation thread.
+    Execute one File Assistant interaction using a persistent LangGraph thread.
     """
-    graph = request.app.state.graph
+    graph = app.state.graph
 
-    logger.info(
-        "API chat request started | thread_id=%s",
-        payload.thread_id,
-    )
-
-    config = {
-        "configurable": {
-            "thread_id": payload.thread_id,
+    result = graph.invoke(
+        {
+            "messages": [
+                (
+                    "user",
+                    request.message,
+                )
+            ]
         },
-        "recursion_limit": RECURSION_LIMIT,
-    }
-
-    try:
-        completed_state = graph.invoke(
-            {
-                "messages": [
-                    HumanMessage(
-                        content=payload.message,
-                    ),
-                ],
-            },
-            config=config,
-        )
-
-    except GraphRecursionError as exc:
-        logger.warning(
-            "API chat request reached recursion limit | thread_id=%s",
-            payload.thread_id,
-        )
-
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "The assistant reached the maximum number of execution steps."
-            ),
-        ) from exc
-
-    except Exception as exc:
-        logger.exception(
-            "API chat request failed | thread_id=%s",
-            payload.thread_id,
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail="The assistant could not complete the request.",
-        ) from exc
-
-    messages = completed_state.get("messages", [])
-
-    for message in reversed(messages):
-        if (
-            isinstance(message, AIMessage)
-            and not message.tool_calls
-            and isinstance(message.content, str)
-            and message.content
-        ):
-            logger.info(
-                "API chat request completed | thread_id=%s",
-                payload.thread_id,
-            )
-
-            return ChatResponse(
-                thread_id=payload.thread_id,
-                response=message.content,
-            )
-
-    logger.error(
-        "API chat request completed without final response | thread_id=%s",
-        payload.thread_id,
+        config={
+            "configurable": {
+                "thread_id": request.thread_id,
+            }
+        },
     )
 
-    raise HTTPException(
-        status_code=500,
-        detail="The assistant did not produce a final response.",
-    )
+    assistant_message = result["messages"][-1]
 
+    return ChatResponse(
+        response=assistant_message.content,
+        thread_id=request.thread_id,
+    )
