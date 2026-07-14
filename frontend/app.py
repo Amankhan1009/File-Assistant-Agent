@@ -1,11 +1,14 @@
-from uuid import uuid4
-
 import streamlit as st
 
 from frontend.api_client import (
     FileAssistantAPIError,
     check_api_health,
+    get_thread_messages,
     send_chat_message,
+)
+from frontend.conversation import (
+    initialize_conversation_state,
+    start_new_conversation,
 )
 
 
@@ -84,31 +87,77 @@ st.markdown(
 
 
 # =============================================================================
-# Session State
+# Persisted Conversation Loading
 # =============================================================================
 
 
-def create_thread_id() -> str:
-    """Create a unique conversation thread identifier."""
-    return f"web-{uuid4()}"
+def load_persisted_conversation(
+    thread_id: str,
+) -> list[dict[str, str]]:
+    """
+    Load persisted messages for the requested conversation thread.
+
+    The API client owns HTTP communication and payload validation.
+    """
+    return get_thread_messages(
+        thread_id=thread_id,
+    )
 
 
-def initialize_session_state() -> None:
-    """Initialize frontend conversation state."""
+# =============================================================================
+# Conversation State Initialization
+# =============================================================================
+
+
+try:
+    initialize_conversation_state(
+        session_state=st.session_state,
+        query_params=st.query_params,
+        load_thread_messages=load_persisted_conversation,
+    )
+
+except FileAssistantAPIError as exc:
+    st.session_state.history_load_error = str(exc)
+
     if "thread_id" not in st.session_state:
-        st.session_state.thread_id = create_thread_id()
+        st.session_state.thread_id = st.query_params.get(
+            "thread",
+            "",
+        )
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
+else:
+    st.session_state.pop(
+        "history_load_error",
+        None,
+    )
 
-def start_new_conversation() -> None:
-    """Reset frontend chat history and start a new backend thread."""
-    st.session_state.thread_id = create_thread_id()
-    st.session_state.messages = []
+
+# =============================================================================
+# New Conversation Handler
+# =============================================================================
 
 
-initialize_session_state()
+def handle_new_conversation() -> None:
+    """
+    Start a new URL-backed conversation and clear transient frontend state.
+    """
+    start_new_conversation(
+        session_state=st.session_state,
+        query_params=st.query_params,
+    )
+
+    st.session_state.pop(
+        "history_load_error",
+        None,
+    )
+
+    st.session_state.pop(
+        "pending_prompt",
+        None,
+    )
 
 
 # =============================================================================
@@ -136,7 +185,7 @@ with st.sidebar:
         use_container_width=True,
         type="primary",
     ):
-        start_new_conversation()
+        handle_new_conversation()
         st.rerun()
 
     st.subheader("Capabilities")
@@ -163,7 +212,13 @@ with st.sidebar:
         )
 
         st.caption(
-            "Built with LangGraph, FastAPI, Streamlit, Groq, and SQLite."
+            "The conversation thread is stored in the page URL so the same "
+            "persisted conversation can be reopened after refresh."
+        )
+
+        st.caption(
+            "Built with LangGraph, FastAPI, Streamlit, Groq, "
+            "SQLite, and PostgreSQL."
         )
 
 
@@ -187,6 +242,18 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+
+# =============================================================================
+# Conversation History Loading Error
+# =============================================================================
+
+
+if "history_load_error" in st.session_state:
+    st.warning(
+        "The conversation history could not be restored. "
+        f"{st.session_state.history_load_error}"
+    )
 
 
 # =============================================================================
@@ -243,7 +310,9 @@ user_message = st.chat_input(
 
 
 if "pending_prompt" in st.session_state:
-    user_message = st.session_state.pop("pending_prompt")
+    user_message = st.session_state.pop(
+        "pending_prompt",
+    )
 
 
 # =============================================================================
