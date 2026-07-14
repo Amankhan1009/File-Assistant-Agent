@@ -6,6 +6,8 @@ from langchain_core.messages import ToolMessage
 from langgraph.prebuilt import ToolNode
 
 from core.logging import get_logger
+from core.paths import get_thread_workspace_root
+from core.workspace_context import bind_workspace_root
 from tools.registry import get_tools
 
 
@@ -69,6 +71,87 @@ def _inspect_tool_result(
 
 
 # =============================================================================
+# Trusted Thread Identity Extraction
+# =============================================================================
+
+
+def _get_request_thread_id(
+    request: Any,
+) -> str:
+    """
+    Extract and validate the trusted LangGraph thread ID from the tool runtime.
+
+    The thread ID originates from the graph invocation configuration and is
+    used to derive the isolated filesystem workspace for tool execution.
+    """
+    runtime = getattr(
+        request,
+        "runtime",
+        None,
+    )
+
+    config = getattr(
+        runtime,
+        "config",
+        None,
+    )
+
+    if not isinstance(
+        config,
+        dict,
+    ):
+        raise RuntimeError(
+            "Tool execution requires a valid thread_id."
+        )
+
+    configurable = config.get(
+        "configurable",
+    )
+
+    if not isinstance(
+        configurable,
+        dict,
+    ):
+        raise RuntimeError(
+            "Tool execution requires a valid thread_id."
+        )
+
+    thread_id = configurable.get(
+        "thread_id",
+    )
+
+    if (
+        not isinstance(thread_id, str)
+        or not thread_id.strip()
+    ):
+        raise RuntimeError(
+            "Tool execution requires a valid thread_id."
+        )
+
+    return thread_id.strip()
+
+
+# =============================================================================
+# Thread Workspace Resolution
+# =============================================================================
+
+
+def _get_request_workspace_root(
+    request: Any,
+):
+    """
+    Resolve the isolated filesystem workspace for one tool execution request.
+    """
+    thread_id = _get_request_thread_id(
+        request,
+    )
+
+    return get_thread_workspace_root(
+        thread_id,
+    )
+
+
+# =============================================================================
 # Tool Execution Observability Wrapper
 # =============================================================================
 
@@ -78,14 +161,37 @@ def observe_tool_call(
     execute: Any,
 ) -> ToolMessage:
     """
-    Observe one synchronous ToolNode execution.
+    Execute one synchronous ToolNode request inside its isolated thread
+    workspace while recording safe tool execution metadata.
 
-    Logs execution metadata without logging tool arguments, file contents,
-    or complete tool results.
+    The wrapper:
+
+    1. Validates the trusted LangGraph thread ID.
+    2. Resolves the thread-specific workspace.
+    3. Binds that workspace for filesystem path resolution.
+    4. Executes the native ToolNode operation.
+    5. Restores the previous workspace context automatically.
+    6. Logs execution metadata without exposing arguments or file contents.
     """
     tool_call = request.tool_call
 
     tool_name = tool_call["name"]
+
+
+    # -------------------------------------------------------------------------
+    # Resolve Trusted Thread Workspace
+    # -------------------------------------------------------------------------
+
+
+    workspace_root = _get_request_workspace_root(
+        request,
+    )
+
+
+    # -------------------------------------------------------------------------
+    # Tool Execution Start
+    # -------------------------------------------------------------------------
+
 
     logger.info(
         "Tool execution started | tool_name=%s",
@@ -94,10 +200,19 @@ def observe_tool_call(
 
     start_time = perf_counter()
 
+
+    # -------------------------------------------------------------------------
+    # Isolated Tool Execution
+    # -------------------------------------------------------------------------
+
+
     try:
-        result = execute(
-            request,
-        )
+        with bind_workspace_root(
+            workspace_root,
+        ):
+            result = execute(
+                request,
+            )
 
     except Exception:
         duration_ms = (
@@ -115,6 +230,12 @@ def observe_tool_call(
 
         raise
 
+
+    # -------------------------------------------------------------------------
+    # Tool Result Inspection
+    # -------------------------------------------------------------------------
+
+
     duration_ms = (
         perf_counter()
         - start_time
@@ -125,6 +246,12 @@ def observe_tool_call(
             result,
         )
     )
+
+
+    # -------------------------------------------------------------------------
+    # Tool Execution Completion
+    # -------------------------------------------------------------------------
+
 
     logger.info(
         "Tool execution completed | "
@@ -148,8 +275,8 @@ def observe_tool_call(
 
 def create_observable_tool_node() -> ToolNode:
     """
-    Create the native LangGraph ToolNode configured with application tools
-    and tool-execution observability.
+    Create the native LangGraph ToolNode configured with application tools,
+    thread-isolated workspace execution, and safe tool observability.
     """
     return ToolNode(
         get_tools(),

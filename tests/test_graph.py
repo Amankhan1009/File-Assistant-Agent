@@ -1009,19 +1009,30 @@ def test_compiled_graph_executes_agent_tool_agent_end_loop(
     from graph.builder import build_graph
 
     workspace = tmp_path / "workspace"
-    workspace.mkdir()
-
-    test_file = workspace / "notes.txt"
-
-    test_file.write_text(
-        "LangGraph tool loop test content",
-        encoding="utf-8",
-    )
 
     monkeypatch.setattr(
         core.paths,
         "WORKSPACE_ROOT",
         workspace,
+    )
+
+
+    # -------------------------------------------------------------------------
+    # Thread-Isolated Workspace Setup
+    # -------------------------------------------------------------------------
+
+
+    thread_id = "compiled-loop-thread"
+
+    thread_workspace = core.paths.get_thread_workspace_root(
+        thread_id,
+    )
+
+    test_file = thread_workspace / "notes.txt"
+
+    test_file.write_text(
+        "LangGraph tool loop test content",
+        encoding="utf-8",
     )
 
     tool_call_id = "compiled-loop-tool-call"
@@ -1066,7 +1077,12 @@ def test_compiled_graph_executes_agent_tool_agent_end_loop(
                     content="Read notes.txt",
                 )
             ],
-        }
+        },
+        config={
+            "configurable": {
+                "thread_id": thread_id,
+            }
+        },
     )
 
     messages = result["messages"]
@@ -1176,17 +1192,28 @@ def test_compiled_graph_passes_tool_result_back_to_second_agent_invocation(
     from graph.builder import build_graph
 
     workspace = tmp_path / "workspace"
-    workspace.mkdir()
-
-    (workspace / "context.txt").write_text(
-        "Tool result visible to model",
-        encoding="utf-8",
-    )
 
     monkeypatch.setattr(
         core.paths,
         "WORKSPACE_ROOT",
         workspace,
+    )
+
+
+    # -------------------------------------------------------------------------
+    # Thread-Isolated Workspace Setup
+    # -------------------------------------------------------------------------
+
+
+    thread_id = "tool-result-context-thread"
+
+    thread_workspace = core.paths.get_thread_workspace_root(
+        thread_id,
+    )
+
+    (thread_workspace / "context.txt").write_text(
+        "Tool result visible to model",
+        encoding="utf-8",
     )
 
     tool_call_id = "tool-result-context-call"
@@ -1231,7 +1258,12 @@ def test_compiled_graph_passes_tool_result_back_to_second_agent_invocation(
                     content="Read context.txt",
                 )
             ],
-        }
+        },
+        config={
+            "configurable": {
+                "thread_id": thread_id,
+            }
+        },
     )
 
     assert fake_model.invoke_count == 2
@@ -1269,17 +1301,28 @@ def test_compiled_graph_preserves_message_order_across_tool_loop(
     from graph.builder import build_graph
 
     workspace = tmp_path / "workspace"
-    workspace.mkdir()
-
-    (workspace / "order.txt").write_text(
-        "Order test content",
-        encoding="utf-8",
-    )
 
     monkeypatch.setattr(
         core.paths,
         "WORKSPACE_ROOT",
         workspace,
+    )
+
+
+    # -------------------------------------------------------------------------
+    # Thread-Isolated Workspace Setup
+    # -------------------------------------------------------------------------
+
+
+    thread_id = "message-order-thread"
+
+    thread_workspace = core.paths.get_thread_workspace_root(
+        thread_id,
+    )
+
+    (thread_workspace / "order.txt").write_text(
+        "Order test content",
+        encoding="utf-8",
     )
 
     first_response = AIMessage(
@@ -1322,7 +1365,12 @@ def test_compiled_graph_preserves_message_order_across_tool_loop(
                     content="Read order.txt",
                 )
             ],
-        }
+        },
+        config={
+            "configurable": {
+                "thread_id": thread_id,
+            }
+        },
     )
 
     message_types = [
@@ -1763,3 +1811,258 @@ def test_compiled_graph_recovers_persisted_thread_after_new_graph_instance(
 
     finally:
         second_connection.close()
+
+
+# =============================================================================
+# Thread Workspace Isolation Integration Tests
+# =============================================================================
+
+
+def test_compiled_graph_isolates_filesystem_state_between_threads(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """
+    Verify that compiled graph tool execution isolates filesystem state by
+    LangGraph thread ID.
+
+    The test proves that:
+
+    1. Thread A creates a file inside its own workspace.
+    2. Thread A can read the file in a later graph invocation.
+    3. Thread B cannot read Thread A's file using the same relative path.
+    4. Thread workspace directories are physically distinct.
+    """
+    import core.paths
+    import graph.nodes
+
+    from core.paths import get_thread_workspace_root
+    from graph.builder import build_graph
+
+
+    # -------------------------------------------------------------------------
+    # Test Workspace Configuration
+    # -------------------------------------------------------------------------
+
+
+    workspace_root = tmp_path / "workspace"
+
+    workspace_root.mkdir()
+
+    monkeypatch.setattr(
+        core.paths,
+        "WORKSPACE_ROOT",
+        workspace_root,
+    )
+
+
+    # -------------------------------------------------------------------------
+    # Thread Configuration
+    # -------------------------------------------------------------------------
+
+
+    thread_a_id = "workspace-isolation-thread-a"
+
+    thread_b_id = "workspace-isolation-thread-b"
+
+    thread_a_config = {
+        "configurable": {
+            "thread_id": thread_a_id,
+        }
+    }
+
+    thread_b_config = {
+        "configurable": {
+            "thread_id": thread_b_id,
+        }
+    }
+
+
+    # -------------------------------------------------------------------------
+    # Deterministic Agent Model
+    # -------------------------------------------------------------------------
+
+
+    class WorkspaceIsolationFakeModel:
+        """
+        Return deterministic tool calls based on the latest human request.
+
+        Tool results are returned as the final response after execution so the
+        test can inspect the real filesystem tool result.
+        """
+
+        def bind_tools(self, tools):
+            return self
+
+
+        def invoke(self, messages):
+            latest_message = messages[-1]
+
+            if isinstance(latest_message, ToolMessage):
+                return AIMessage(
+                    content=latest_message.content,
+                )
+
+            latest_human_message = next(
+                message
+                for message in reversed(messages)
+                if isinstance(message, HumanMessage)
+            )
+
+            if latest_human_message.content == "Create private file":
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "create_file",
+                            "args": {
+                                "path": "shared.txt",
+                                "content": "THREAD_A_PRIVATE_CONTENT",
+                            },
+                            "id": "create-private-file-call",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+
+            if latest_human_message.content == "Read private file":
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "read_file",
+                            "args": {
+                                "path": "shared.txt",
+                            },
+                            "id": "read-private-file-call",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+
+            raise AssertionError(
+                "Unexpected human message received by fake model."
+            )
+
+
+    fake_model = WorkspaceIsolationFakeModel()
+
+    monkeypatch.setattr(
+        graph.nodes,
+        "get_agent_model",
+        lambda: fake_model,
+    )
+
+
+    # -------------------------------------------------------------------------
+    # Build Compiled Graph
+    # -------------------------------------------------------------------------
+
+
+    graph = build_graph()
+
+
+    # -------------------------------------------------------------------------
+    # Thread A Creates Private File
+    # -------------------------------------------------------------------------
+
+
+    create_result = graph.invoke(
+        {
+            "messages": [
+                HumanMessage(
+                    content="Create private file",
+                )
+            ],
+        },
+        config=thread_a_config,
+    )
+
+    assert '"ok": true' in create_result["messages"][-1].content
+
+    assert (
+        '"path": "shared.txt"'
+        in create_result["messages"][-1].content
+    )
+
+
+    # -------------------------------------------------------------------------
+    # Thread A Reads Its Own File
+    # -------------------------------------------------------------------------
+
+
+    thread_a_read_result = graph.invoke(
+        {
+            "messages": [
+                HumanMessage(
+                    content="Read private file",
+                )
+            ],
+        },
+        config=thread_a_config,
+    )
+
+    assert (
+        "THREAD_A_PRIVATE_CONTENT"
+        in thread_a_read_result["messages"][-1].content
+    )
+
+
+    # -------------------------------------------------------------------------
+    # Thread B Attempts Cross-Thread Read
+    # -------------------------------------------------------------------------
+
+
+    thread_b_read_result = graph.invoke(
+        {
+            "messages": [
+                HumanMessage(
+                    content="Read private file",
+                )
+            ],
+        },
+        config=thread_b_config,
+    )
+
+    assert (
+        '"ok": false'
+        in thread_b_read_result["messages"][-1].content
+    )
+
+    assert (
+        '"type": "not_found"'
+        in thread_b_read_result["messages"][-1].content
+    )
+
+    assert (
+        "THREAD_A_PRIVATE_CONTENT"
+        not in thread_b_read_result["messages"][-1].content
+    )
+
+
+    # -------------------------------------------------------------------------
+    # Physical Workspace Verification
+    # -------------------------------------------------------------------------
+
+
+    thread_a_workspace = get_thread_workspace_root(
+        thread_id=thread_a_id,
+    )
+
+    thread_b_workspace = get_thread_workspace_root(
+        thread_id=thread_b_id,
+    )
+
+    thread_a_file = thread_a_workspace / "shared.txt"
+
+    thread_b_file = thread_b_workspace / "shared.txt"
+
+    assert thread_a_workspace != thread_b_workspace
+
+    assert thread_a_file.exists()
+
+    assert thread_a_file.read_text(
+        encoding="utf-8",
+    ) == "THREAD_A_PRIVATE_CONTENT"
+
+    assert not thread_b_file.exists()
