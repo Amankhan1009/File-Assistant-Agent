@@ -408,3 +408,33 @@ The repository excludes runtime and sensitive files including:
 ## License
 
 No license has been added yet.
+
+---
+
+## HTTP API
+
+The File Assistant can also run as a FastAPI application.
+
+The API reuses the same LangGraph agent, filesystem tools, SQLite checkpoint persistence, recursion protection, and logging infrastructure as the CLI application.
+
+### Start the API Server
+
+Run `uvicorn api.main:app --reload` from the project root.
+
+The API is available locally at `http://127.0.0.1:8000`.
+
+Interactive documentation:
+
+- Swagger UI: `http://127.0.0.1:8000/docs`
+- ReDoc: `http://127.0.0.1:8000/redoc`
+
+### API Endpoints
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| GET | `/health` | Returns the API health status |
+| POST | `/chat` | Executes one File Assistant interaction |
+
+### Persistent Conversation Threads
+
+The `thread_id` identifies a persistent LangGraph conversation. Requests using the same thread ID can access previous conversational context stored by the SQLite checkpointer, while different thread IDs remain isolated.
