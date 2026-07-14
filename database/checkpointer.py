@@ -11,6 +11,8 @@ from typing import Iterator
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from core.config import CHECKPOINT_BACKEND, DATABASE_URL
 
@@ -79,9 +81,10 @@ def checkpointer_runtime() -> Iterator[BaseCheckpointSaver]:
 
     SQLite owns a direct sqlite3 connection that is closed during cleanup.
 
-    PostgreSQL uses PostgresSaver.from_conn_string() as a context manager.
-    setup() initializes or migrates the LangGraph checkpoint schema before
-    the checkpointer is used.
+    PostgreSQL uses a bounded psycopg ConnectionPool for long-running
+    application processes. PostgresSaver borrows connections from the pool,
+    and setup() initializes or migrates the LangGraph checkpoint schema
+    before the checkpointer is used.
     """
     if CHECKPOINT_BACKEND == "sqlite":
         checkpointer = create_sqlite_checkpointer()
@@ -95,9 +98,18 @@ def checkpointer_runtime() -> Iterator[BaseCheckpointSaver]:
         return
 
     if CHECKPOINT_BACKEND == "postgres":
-        with PostgresSaver.from_conn_string(
-            DATABASE_URL,
-        ) as checkpointer:
+        with ConnectionPool(
+            conninfo=DATABASE_URL,
+            min_size=1,
+            max_size=5,
+            kwargs={
+                "autocommit": True,
+                "prepare_threshold": 0,
+                "row_factory": dict_row,
+            },
+        ) as pool:
+            checkpointer = PostgresSaver(pool)
+
             checkpointer.setup()
 
             yield checkpointer
