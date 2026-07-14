@@ -106,3 +106,104 @@ def chat(
         response=assistant_message.content,
         thread_id=request.thread_id,
     )
+
+# =============================================================================
+# Thread Message History Endpoint
+# =============================================================================
+
+
+@app.get(
+    "/threads/{thread_id}/messages",
+)
+def get_thread_messages(
+    thread_id: str,
+) -> dict:
+    """
+    Return persisted conversation messages from the latest LangGraph checkpoint
+    for the requested thread.
+
+    A missing thread returns an empty message list.
+    """
+    checkpointer = app.state.checkpointer
+
+
+    # -------------------------------------------------------------------------
+    # Checkpoint Retrieval Configuration
+    # -------------------------------------------------------------------------
+
+
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+        }
+    }
+
+
+    # -------------------------------------------------------------------------
+    # Latest Checkpoint Retrieval
+    # -------------------------------------------------------------------------
+
+
+    checkpoint = checkpointer.get(config)
+
+
+    # -------------------------------------------------------------------------
+    # Missing Thread Response
+    # -------------------------------------------------------------------------
+
+
+    if checkpoint is None:
+        return {
+            "thread_id": thread_id,
+            "messages": [],
+        }
+
+
+    # -------------------------------------------------------------------------
+    # Persisted Message Extraction
+    # -------------------------------------------------------------------------
+
+
+    persisted_messages = checkpoint.get(
+        "channel_values",
+        {},
+    ).get(
+        "messages",
+        [],
+    )
+
+
+    # -------------------------------------------------------------------------
+    # Frontend Message Serialization
+    # -------------------------------------------------------------------------
+
+
+    messages = []
+
+    for message in persisted_messages:
+        if message.type == "human":
+            role = "user"
+
+        elif message.type == "ai":
+            role = "assistant"
+
+        else:
+            continue
+
+        messages.append(
+            {
+                "role": role,
+                "content": message.content,
+            }
+        )
+
+
+    # -------------------------------------------------------------------------
+    # Thread History Response
+    # -------------------------------------------------------------------------
+
+
+    return {
+        "thread_id": thread_id,
+        "messages": messages,
+    }
