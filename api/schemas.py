@@ -99,3 +99,43 @@ class HealthResponse(BaseModel):
     """Response payload returned by the API health endpoint."""
 
     status: str
+
+# =============================================================================
+# Workspace Schemas
+# =============================================================================
+
+from pydantic import BaseModel
+
+
+class WorkspaceItem(BaseModel):
+    """
+    One file or directory in the workspace tree.
+    """
+
+    name: str
+    relative_path: str
+    is_directory: bool
+    children: list["WorkspaceItem"] = []
+
+
+class WorkspaceResponse(BaseModel):
+    """
+    Workspace tree returned to the frontend.
+    """
+
+    items: list[WorkspaceItem]
+
+
+WorkspaceItem.model_rebuild()
+
+# =============================================================================
+# Preview Schemas
+# =============================================================================
+
+
+class FilePreviewResponse(BaseModel):
+    """
+    File preview returned to the frontend.
+    """
+
+    content: str

@@ -50,11 +50,11 @@ def render_workspace_tree(
 
             if st.button(
                 f"📄 {item['name']}",
-                key=str(item["path"]),
+                key=str(item["relative_path"]),
                 use_container_width=True,
             ):
 
                 st.session_state.selected_file = {
                     "name": item["name"],
-                    "path": item["path"],
+                    "relative_path": item["relative_path"],
                 }

@@ -11,8 +11,7 @@ from contextlib import asynccontextmanager
 # =============================================================================
 
 
-from fastapi import FastAPI
-
+from fastapi import FastAPI, HTTPException, Query
 
 # =============================================================================
 # Project Imports
@@ -32,6 +31,13 @@ from graph.builder import build_graph
 
 from core.paths import get_thread_workspace_root
 from core.workspace_context import bind_workspace_root
+from pathlib import Path
+
+from api.schemas import (
+    WorkspaceItem,
+    WorkspaceResponse,
+    FilePreviewResponse,
+)
 
 # =============================================================================
 # Application Lifespan
@@ -110,6 +116,49 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# =============================================================================
+# Workspace Tree Helpers
+# =============================================================================
+
+
+def _build_workspace_tree(
+    directory: Path,
+    root: Path,
+) -> list[WorkspaceItem]:
+    """
+    Recursively build the workspace tree returned by the API.
+    """
+
+    items: list[WorkspaceItem] = []
+
+    for path in sorted(
+        directory.iterdir(),
+        key=lambda entry: (
+            not entry.is_dir(),
+            entry.name.lower(),
+        ),
+    ):
+
+        relative_path = str(
+            path.relative_to(root)
+        )
+
+        item = WorkspaceItem(
+            name=path.name,
+            relative_path=relative_path,
+            is_directory=path.is_dir(),
+            children=[],
+        )
+
+        if path.is_dir():
+            item.children = _build_workspace_tree(
+                path,
+                root,
+            )
+
+        items.append(item)
+
+    return items
 
 # =============================================================================
 # Health Endpoint
@@ -396,3 +445,99 @@ def get_thread_messages(
         "thread_id": thread_id,
         "messages": messages,
     }
+
+# =============================================================================
+# Workspace Listing Endpoint
+# =============================================================================
+
+
+@app.get(
+    "/workspace",
+    response_model=WorkspaceResponse,
+)
+def get_workspace(
+    thread_id: str,
+) -> WorkspaceResponse:
+    """
+    Return the complete workspace tree for a conversation thread.
+    """
+
+    workspace_root = get_thread_workspace_root(
+        thread_id,
+    )
+
+    items = _build_workspace_tree(
+        workspace_root,
+        workspace_root,
+    )
+
+    return WorkspaceResponse(
+        items=items,
+    )
+
+
+# =============================================================================
+# File Preview Endpoint
+# =============================================================================
+
+
+@app.get(
+    "/preview",
+    response_model=FilePreviewResponse,
+)
+def get_file_preview(
+    thread_id: str,
+    relative_path: str,
+) -> FilePreviewResponse:
+    """
+    Return the UTF-8 text preview for a file inside a thread workspace.
+    """
+
+    workspace_root = get_thread_workspace_root(
+        thread_id,
+    )
+
+    file_path = (
+        workspace_root
+        / relative_path
+    ).resolve()
+
+    try:
+        file_path.relative_to(
+            workspace_root,
+        )
+
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file path.",
+        )
+
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="File not found.",
+        )
+
+    if not file_path.is_file():
+        raise HTTPException(
+            status_code=400,
+            detail="Path is not a file.",
+        )
+
+    try:
+
+        content = file_path.read_text(
+            encoding="utf-8",
+        )
+
+    except UnicodeDecodeError:
+
+        raise HTTPException(
+            status_code=400,
+            detail="File is not UTF-8 text.",
+        )
+
+    return FilePreviewResponse(
+        content=content,
+    )

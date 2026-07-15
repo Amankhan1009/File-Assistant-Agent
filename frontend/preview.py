@@ -1,9 +1,11 @@
 # =============================================================================
-# Standard Library Imports
+# Project Imports
 # =============================================================================
 
 
-from pathlib import Path
+from frontend.api_client import (
+    get_file_preview as get_file_preview_from_api,
+)
 
 
 # =============================================================================
@@ -12,30 +14,14 @@ from pathlib import Path
 
 
 def get_file_preview(
-    file_path: Path,
+    thread_id: str,
+    relative_path: str,
 ) -> str:
     """
-    Return the text contents of a file for preview.
-
-    Binary files or unreadable files return a friendly message instead.
+    Retrieve the file preview from the backend API.
     """
 
-    try:
-
-        return file_path.read_text(
-            encoding="utf-8",
-        )
-
-    except UnicodeDecodeError:
-
-        return (
-            "This file cannot be previewed because it is "
-            "not a UTF-8 text file."
-        )
-
-    except Exception as exc:
-
-        return (
-            "Unable to preview file.\n\n"
-            f"{exc}"
-        )
+    return get_file_preview_from_api(
+        thread_id,
+        relative_path,
+    )

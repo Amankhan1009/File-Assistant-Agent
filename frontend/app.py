@@ -397,17 +397,10 @@ with st.sidebar:
 
     else:
 
-        # render_workspace_tree(
-        #     workspace_items,
-        # )
-        st.write("DEBUG:", workspace_items)
-
-        for item in workspace_items:
-            st.write(item)
-
         render_workspace_tree(
             workspace_items,
         )
+        
 
 
     st.divider()
@@ -605,7 +598,8 @@ if selected_file is not None:
     )
 
     preview = get_file_preview(
-        selected_file["path"],
+        st.session_state.thread_id,
+        selected_file["relative_path"],
     )
 
     st.code(

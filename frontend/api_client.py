@@ -391,3 +391,91 @@ def get_conversations(
         )
 
     return validated
+
+# =============================================================================
+# Workspace Client
+# =============================================================================
+
+
+def get_workspace(
+    thread_id: str,
+) -> list[dict]:
+    """
+    Retrieve the workspace tree for a conversation thread.
+    """
+
+    try:
+        response = httpx.get(
+            f"{API_BASE_URL}/workspace",
+            params={
+                "thread_id": thread_id,
+            },
+            timeout=CONVERSATIONS_TIMEOUT_SECONDS,
+        )
+
+        response.raise_for_status()
+
+    except httpx.TimeoutException as exc:
+        raise FileAssistantAPIError(
+            "The workspace request timed out."
+        ) from exc
+
+    except httpx.HTTPStatusError as exc:
+        raise FileAssistantAPIError(
+            f"The File Assistant API returned HTTP "
+            f"{exc.response.status_code} while loading the workspace."
+        ) from exc
+
+    except httpx.RequestError as exc:
+        raise FileAssistantAPIError(
+            "Could not connect to the File Assistant API while loading the workspace."
+        ) from exc
+
+    payload = response.json()
+
+    return payload["items"] 
+
+# =============================================================================
+# File Preview Client
+# =============================================================================
+
+
+def get_file_preview(
+    thread_id: str,
+    relative_path: str,
+) -> str:
+    """
+    Retrieve a UTF-8 text preview from the backend.
+    """
+
+    try:
+        response = httpx.get(
+            f"{API_BASE_URL}/preview",
+            params={
+                "thread_id": thread_id,
+                "relative_path": relative_path,
+            },
+            timeout=CONVERSATIONS_TIMEOUT_SECONDS,
+        )
+
+        response.raise_for_status()
+
+    except httpx.TimeoutException as exc:
+        raise FileAssistantAPIError(
+            "The preview request timed out."
+        ) from exc
+
+    except httpx.HTTPStatusError as exc:
+        raise FileAssistantAPIError(
+            f"The File Assistant API returned HTTP "
+            f"{exc.response.status_code} while loading the preview."
+        ) from exc
+
+    except httpx.RequestError as exc:
+        raise FileAssistantAPIError(
+            "Could not connect to the File Assistant API while loading the preview."
+        ) from exc
+
+    payload = response.json()
+
+    return payload["content"]
