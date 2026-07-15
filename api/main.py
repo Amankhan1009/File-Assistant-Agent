@@ -1,13 +1,33 @@
+# =============================================================================
+# Standard Library Imports
+# =============================================================================
+
+
 from contextlib import asynccontextmanager
 
+
+# =============================================================================
+# Third-Party Imports
+# =============================================================================
+
+
 from fastapi import FastAPI
+
+
+# =============================================================================
+# Project Imports
+# =============================================================================
+
 
 from api.schemas import (
     ChatRequest,
     ChatResponse,
+    ConversationSummary,
+    ConversationListResponse,
     HealthResponse,
 )
-from database.checkpointer import checkpointer_runtime
+from database.checkpointer import database_runtime
+from database.conversations import PostgresConversationRepository
 from graph.builder import build_graph
 
 
@@ -22,16 +42,54 @@ async def lifespan(app: FastAPI):
     Initialize shared application resources during startup and clean them up
     during shutdown.
 
-    The configured checkpointer backend owns its database-specific lifecycle.
-    The compiled LangGraph instance is shared across API requests.
+    The database runtime owns database-specific resources.
+
+    LangGraph checkpoint persistence stores agent state and message history.
+
+    PostgreSQL conversation metadata persistence uses the same application-owned
+    connection pool for conversation discovery and sidebar presentation.
+
+    The compiled LangGraph instance and conversation repository are shared
+    across API requests.
     """
-    with checkpointer_runtime() as checkpointer:
+    with database_runtime() as runtime:
         graph = build_graph(
-            checkpointer=checkpointer,
+            checkpointer=runtime.checkpointer,
         )
 
-        app.state.checkpointer = checkpointer
+
+        # ---------------------------------------------------------------------
+        # Conversation Repository Initialization
+        # ---------------------------------------------------------------------
+
+
+        if runtime.pool is None:
+            conversation_repository = None
+
+        else:
+            conversation_repository = PostgresConversationRepository(
+                pool=runtime.pool,
+            )
+
+            conversation_repository.setup()
+
+
+        # ---------------------------------------------------------------------
+        # Shared Application State
+        # ---------------------------------------------------------------------
+
+
+        app.state.checkpointer = runtime.checkpointer
+
         app.state.graph = graph
+
+        app.state.conversation_repository = conversation_repository
+
+
+        # ---------------------------------------------------------------------
+        # Application Runtime
+        # ---------------------------------------------------------------------
+
 
         yield
 
@@ -81,8 +139,34 @@ def chat(
 ) -> ChatResponse:
     """
     Execute one File Assistant interaction using a persistent LangGraph thread.
+
+    PostgreSQL deployments also register conversation metadata for discovery
+    and sidebar presentation.
     """
     graph = app.state.graph
+
+    conversation_repository = (
+        app.state.conversation_repository
+    )
+
+
+    # -------------------------------------------------------------------------
+    # Conversation Metadata Registration
+    # -------------------------------------------------------------------------
+
+
+    if conversation_repository is not None:
+        conversation_repository.ensure_conversation(
+            thread_id=request.thread_id,
+            owner_id=request.owner_id,
+            title=request.message,
+        )
+
+
+    # -------------------------------------------------------------------------
+    # Graph Execution
+    # -------------------------------------------------------------------------
+
 
     result = graph.invoke(
         {
@@ -102,10 +186,103 @@ def chat(
 
     assistant_message = result["messages"][-1]
 
+
+    # -------------------------------------------------------------------------
+    # Conversation Activity Update
+    # -------------------------------------------------------------------------
+
+
+    if conversation_repository is not None:
+        conversation_repository.touch_conversation(
+            thread_id=request.thread_id,
+            owner_id=request.owner_id,
+        )
+
+
+    # -------------------------------------------------------------------------
+    # Chat Response
+    # -------------------------------------------------------------------------
+
+
     return ChatResponse(
         response=assistant_message.content,
         thread_id=request.thread_id,
     )
+
+
+# =============================================================================
+# Conversation Listing Endpoint
+# =============================================================================
+
+
+@app.get(
+    "/conversations",
+    response_model=ConversationListResponse,
+)
+def list_conversations(
+    owner_id: str,
+) -> ConversationListResponse:
+    """
+    Return conversation metadata owned by the requested anonymous owner.
+
+    PostgreSQL deployments persist application-owned conversation metadata.
+
+    Local SQLite deployments currently do not expose a conversation metadata
+    repository and therefore return an empty conversation list.
+    """
+    conversation_repository = (
+        app.state.conversation_repository
+    )
+
+
+    # -------------------------------------------------------------------------
+    # Missing Conversation Repository
+    # -------------------------------------------------------------------------
+
+
+    if conversation_repository is None:
+        return ConversationListResponse(
+            conversations=[],
+        )
+
+
+    # -------------------------------------------------------------------------
+    # Conversation Metadata Retrieval
+    # -------------------------------------------------------------------------
+
+
+    conversation_records = (
+        conversation_repository.list_conversations(
+            owner_id=owner_id,
+        )
+    )
+
+
+    # -------------------------------------------------------------------------
+    # Conversation Response Serialization
+    # -------------------------------------------------------------------------
+
+
+    conversations = [
+        ConversationSummary(
+            thread_id=record.thread_id,
+            title=record.title,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+        )
+        for record in conversation_records
+    ]
+
+
+    # -------------------------------------------------------------------------
+    # Conversation List Response
+    # -------------------------------------------------------------------------
+
+
+    return ConversationListResponse(
+        conversations=conversations,
+    )
+
 
 # =============================================================================
 # Thread Message History Endpoint
@@ -144,7 +321,9 @@ def get_thread_messages(
     # -------------------------------------------------------------------------
 
 
-    checkpoint = checkpointer.get(config)
+    checkpoint = checkpointer.get(
+        config,
+    )
 
 
     # -------------------------------------------------------------------------
