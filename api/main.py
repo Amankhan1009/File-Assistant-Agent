@@ -30,6 +30,8 @@ from database.checkpointer import database_runtime
 from database.conversations import PostgresConversationRepository
 from graph.builder import build_graph
 
+from core.paths import get_thread_workspace_root
+from core.workspace_context import bind_workspace_root
 
 # =============================================================================
 # Application Lifespan
@@ -168,21 +170,29 @@ def chat(
     # -------------------------------------------------------------------------
 
 
-    result = graph.invoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    request.message,
-                )
-            ]
-        },
-        config={
-            "configurable": {
-                "thread_id": request.thread_id,
-            }
-        },
+    workspace_root = get_thread_workspace_root(
+        request.thread_id,
     )
+
+    with bind_workspace_root(
+        workspace_root,
+    ):
+
+        result = graph.invoke(
+            {
+                "messages": [
+                    (
+                        "user",
+                        request.message,
+                    )
+                ]
+            },
+            config={
+                "configurable": {
+                    "thread_id": request.thread_id,
+                }
+            },
+        )
 
     assistant_message = result["messages"][-1]
 
