@@ -397,6 +397,14 @@ with st.sidebar:
 
     else:
 
+        # render_workspace_tree(
+        #     workspace_items,
+        # )
+        st.write("DEBUG:", workspace_items)
+
+        for item in workspace_items:
+            st.write(item)
+
         render_workspace_tree(
             workspace_items,
         )

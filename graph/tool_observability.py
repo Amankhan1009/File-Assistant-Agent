@@ -128,6 +128,7 @@ def _get_request_thread_id(
             "Tool execution requires a valid thread_id."
         )
 
+
     return thread_id.strip()
 
 
